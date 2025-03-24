@@ -8,6 +8,9 @@ import threading
 import logging
 import os
 
+# Streamlit 1.18+ 支持 add_script_run_ctx，用于多线程上下文传递
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+
 # ================== 全局配置 ==================
 _TTS_ENGINE = None
 _TTS_LOCK = threading.Lock()
@@ -27,9 +30,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# ============== 初始化函数 ==============
+# ============== 初始化 TTS 引擎 ==================
 def init_tts_engine():
+    """初始化 pyttsx3 语音引擎"""
     global _TTS_ENGINE
     try:
         if _TTS_ENGINE is None:
@@ -37,7 +40,6 @@ def init_tts_engine():
             _TTS_ENGINE.setProperty('rate', 150)
             _TTS_ENGINE.setProperty('volume', 1)
             logging.info("语音引擎初始化成功")
-
             # 测试语音
             _TTS_ENGINE.say("系统就绪")
             _TTS_ENGINE.runAndWait()
@@ -45,14 +47,16 @@ def init_tts_engine():
     except Exception as e:
         logging.error(f"语音初始化失败: {str(e)}")
 
-
+# 若在 streamlit run 环境中，可以做一次初始化
 if os.environ.get('STREAMLIT_RUNNING'):
     init_tts_engine()
 
-
-# ============== 功能函数 ==============
-def format_think_content(text):
-    """格式化思考内容为带样式的HTML"""
+# ============== 辅助函数 ==================
+def format_think_content(text: str) -> str:
+    """
+    格式化 <think>...</think> 内容为 HTML 样式块
+    在展示时将其变为灰色斜体块
+    """
     return re.sub(
         r'<think>(.*?)</think>',
         r'<div class="think-text">\1</div>',
@@ -60,18 +64,16 @@ def format_think_content(text):
         flags=re.DOTALL
     )
 
-
-def tts_speak(text):
-    """语音播报"""
+def tts_speak(text: str):
+    """语音播报：去除 <think> 内容后调用 pyttsx3"""
     if not text:
         return
-
     try:
         with _TTS_LOCK:
             if _TTS_ENGINE is None:
                 init_tts_engine()
-
             if _TTS_ENGINE:
+                # 去掉 <think> 思考标签只读可见内容
                 cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
                 _TTS_ENGINE.say(cleaned.strip())
                 _TTS_ENGINE.runAndWait()
@@ -81,110 +83,110 @@ def tts_speak(text):
         with open(_TTS_ERROR_LOG, "a", encoding="utf-8") as f:
             f.write(f"{error_msg}\n")
 
-
-# ============== 页面组件 ==============
+# ============== 页面结构 ==================
 st.title("智能对话助手 🤖")
 st.write("支持思考过程可视化的AI聊天机器人")
 
-# 聊天记录管理
+# 初始化 session_state
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = deque(maxlen=20)
+    st.session_state.chat_history = deque(maxlen=20)  # 保存最近20条对话
+if "processing" not in st.session_state:
+    st.session_state.processing = {"active": False, "assistant_message": ""}
 
-# 分离实时显示和历史记录渲染
-if "pending_response" not in st.session_state:
-    st.session_state.pending_response = False
+# 用于渲染所有对话的容器
+chat_container = st.container()
 
+def render_chat():
+    """
+    统一在同一个容器中渲染对话历史 + 当前流式回复
+    """
+    chat_container.empty()
+    with chat_container:
+        # 先渲染历史记录
+        for item in st.session_state.chat_history:
+            with st.chat_message(item["role"]):
+                st.markdown(format_think_content(item["content"]), unsafe_allow_html=True)
+        # 若 AI 正在生成回复，则渲染一个“assistant”消息框显示流式文本
+        if st.session_state.processing.get("active", False):
+            with st.chat_message("assistant"):
+                current_text = st.session_state.processing.get("assistant_message", "")
+                # 结尾加个闪烁符号
+                st.markdown(format_think_content(current_text + "▌"), unsafe_allow_html=True)
 
-def render_historical_messages():
-    """渲染历史消息（排除正在处理的最后一条用户消息）"""
-    # 排除最后一条用户消息（正在处理中的消息）
-    messages_to_render = list(st.session_state.chat_history)[
-                         :-1] if st.session_state.pending_response else st.session_state.chat_history
-
-    for chat in messages_to_render:
-        with st.chat_message(chat["role"]):
-            formatted = format_think_content(chat["content"])
-            st.markdown(formatted, unsafe_allow_html=True)
-
-
-def render_realtime_interaction():
-    """渲染实时交互消息"""
-    if st.session_state.pending_response:
-        # 显示最后一条用户消息
-        last_user_msg = st.session_state.chat_history[-1]
-        with st.chat_message(last_user_msg["role"]):
-            st.markdown(last_user_msg["content"], unsafe_allow_html=True)
-
-        # 显示助理响应占位符
-        with st.chat_message("assistant"):
-            st.session_state.response_placeholder = st.empty()
-
-
-# ============== 用户交互 ==============
+# ============== 侧边栏 ==================
 with st.sidebar:
     model = st.selectbox("选择模型", ["deepseek-r1", "llama3", "mixtral"])
-    st.button("清空记录", on_click=lambda: st.session_state.chat_history.clear())
+    if st.button("清空记录"):
+        st.session_state.chat_history.clear()
+        st.experimental_rerun()
 
-prompt = st.chat_input("请输入您的问题...")
+# ============== 主体：用户输入 + 后台处理 ==================
+user_input = st.chat_input("请输入您的问题...")
 
-if prompt and not st.session_state.pending_response:
-    # 标记开始处理新请求
-    st.session_state.pending_response = True
+if user_input and not st.session_state.processing.get("active", False):
+    # 1. 用户输入立即显示到对话记录
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    render_chat()  # 立刻更新界面，让用户消息可见
 
-    # 添加用户消息到历史记录
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
+    # 2. 设置处理状态，准备获取 AI 回复
+    st.session_state.processing = {"active": True, "assistant_message": ""}
 
-    # 构建请求
-    history = "\n".join(
-        [f"{msg['role'].capitalize()}: {msg['content']}"
-         for msg in st.session_state.chat_history[:-1]]  # 排除当前正在处理的用户消息
-    )
+    def get_ai_response():
+        """
+        在后台线程中流式获取 AI 回复，并实时更新界面。
+        """
+        try:
+            # 构建历史上下文
+            history_text = "\n".join(
+                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in st.session_state.chat_history]
+            )
+            # 调用你的后端接口，这里以 localhost:11434 为例
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": model,
+                    "prompt": f"{history_text}\nAssistant:",
+                    "stream": True
+                },
+                stream=True,
+                timeout=30
+            )
+            response.raise_for_status()
 
-    try:
-        # 发送请求
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": model,
-                "prompt": f"对话历史：\n{history}\nAssistant:",
-                "stream": True
-            },
-            stream=True,
-            timeout=30
-        )
-        response.raise_for_status()
+            full_response = ""
+            # 流式接收
+            for line in response.iter_lines():
+                if line:
+                    # 调试：打印原始返回
+                    print("DEBUG raw line:", line)
+                    data = json.loads(line.decode())
+                    print("DEBUG parsed data:", data)
 
-        # 流式处理
-        full_response = ""
-        for line in response.iter_lines():
-            if line:
-                data = json.loads(line.decode())
-                if 'response' in data:
-                    full_response += data['response']
-                    # 更新实时显示
-                    formatted = format_think_content(full_response + "▌")
-                    st.session_state.response_placeholder.markdown(formatted, unsafe_allow_html=True)
+                    # 如果你的服务端返回的字段不是 'response'，请改成正确字段名
+                    if 'response' in data:
+                        chunk = data['response']
+                        full_response += chunk
+                        st.session_state.processing["assistant_message"] = full_response
+                        # 实时刷新
+                        render_chat()
 
-        # 处理完成
-        formatted_final = format_think_content(full_response)
-        st.session_state.response_placeholder.markdown(formatted_final, unsafe_allow_html=True)
+            # 3. 将最终回复加入历史
+            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
 
-        # 添加助理响应到历史记录
-        st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+            # 4. 启动语音播报（可选）
+            threading.Thread(target=tts_speak, args=(full_response,), daemon=True).start()
 
-        # 启动语音线程
-        threading.Thread(
-            target=tts_speak,
-            args=(full_response,),
-            daemon=True
-        ).start()
+        except Exception as e:
+            logging.error(f"请求失败: {str(e)}")
+        finally:
+            # 5. 流式结束，重置处理状态
+            st.session_state.processing = {"active": False, "assistant_message": ""}
+            render_chat()
 
-    except Exception as e:
-        logging.error(f"请求失败: {str(e)}")
-    finally:
-        # 重置处理状态
-        st.session_state.pending_response = False
+    # 创建后台线程并传递当前的 ScriptRunContext
+    worker_thread = threading.Thread(target=get_ai_response, daemon=True)
+    add_script_run_ctx(worker_thread)
+    worker_thread.start()
 
-# 页面渲染流程
-render_historical_messages()  # 渲染历史消息
-render_realtime_interaction()  # 渲染实时交互
+#（可选）如果想在没有输入时也随时更新界面，可放开这行
+# render_chat()
