@@ -47,8 +47,8 @@ def stop_tts():
 
 
 # DeepSeek API 配置
-DEEPSEEK_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-API_KEY = "sk-aamgdovwgwalykadxfwdkbipuusdggapytopbblgihybnakn"
+DEEPSEEK_API_URL = "htions"
+API_KEY = "sk-l"
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 st.title("DeepSeek Chatbot 🤖")
@@ -66,8 +66,8 @@ for msg in st.session_state.messages:
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 
 # 你的 Milvus 云端配置
-CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+CLUSTER_ENDPOINT = ""
+TOKEN = ""
 
 # 连接 Milvus
 try:
