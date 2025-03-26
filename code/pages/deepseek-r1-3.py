@@ -43,7 +43,7 @@ def stop_tts():
 
 # DeepSeek API 配置
 DEEPSEEK_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-API_KEY = "sk-aamgdovwgwalykadxfwdkbipuusdggapytopbblgihybnakn"
+API_KEY = "sn"
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 st.title("DeepSeek Chatbot 🤖")
