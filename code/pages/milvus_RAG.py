@@ -56,8 +56,8 @@ for msg in st.session_state.messages:
             st.markdown(msg["content"])
 
 # ------------------ Milvus 初始化 ------------------ #
-CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+CLUSTER_ENDPOINT = ""
+TOKEN = ""
 
 try:
     connections.connect(alias="default", uri=CLUSTER_ENDPOINT, token=TOKEN)
@@ -92,8 +92,8 @@ def search_similar_docs(query_text, top_k=3):
     return [hit.entity.get("text") for hit in hits]
 
 # ------------------ 用户输入 & DeepSeek ------------------ #
-DEEPSEEK_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-API_KEY = "sk-aamgdovwgwalykadxfwdkbipuusdggapytopbblgihybnakn"
+DEEPSEEK_API_URL = ""
+API_KEY = ""
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 user_input = st.chat_input("请输入你的问题...")
