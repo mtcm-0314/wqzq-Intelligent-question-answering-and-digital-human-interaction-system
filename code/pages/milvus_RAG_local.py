@@ -56,7 +56,7 @@ for msg in st.session_state.messages:
 
 # ------------------ Milvus 初始化 ------------------ #
 CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+TOKEN = "358acc"
 
 try:
     connections.connect(alias="default", uri=CLUSTER_ENDPOINT, token=TOKEN)
