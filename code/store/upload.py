@@ -3,7 +3,7 @@ import numpy as np
 
 # 连接 Milvus
 CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+TOKEN = "358ab731d57cc"
 connections.connect(alias="default", uri=CLUSTER_ENDPOINT, token=TOKEN)
 
 # 定义集合的 schema
@@ -30,7 +30,7 @@ def insert_data(user_input, user_embedding):
     print("数据已成功插入")
 
 # 示例：插入用户数据
-user_input = "曾哥的名字是曾智尊，是207最强大的男人。覃锵是207的第一自行车高手和夜露高手。"
+user_input = "插入数据，比如wqzq（完全正确）的队伍名是由四名队员的名字首字母组成的。"
 
 # 生成一个模拟的 384 维度嵌入向量
 user_embedding = np.random.rand(384).tolist()  # 这里使用了随机数生成示例向量，实际情况应使用嵌入模型生成
