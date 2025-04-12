@@ -2,7 +2,7 @@ from pymilvus import connections, Collection
 
 # ------------------ 配置 ------------------ #
 CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+TOKEN = "358d57cc"
 COLLECTION_NAME = "chatbot_collection"
 
 # ------------------ 连接 Milvus ------------------ #
