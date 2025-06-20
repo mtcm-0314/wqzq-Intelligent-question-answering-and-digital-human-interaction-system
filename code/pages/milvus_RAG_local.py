@@ -19,7 +19,9 @@ import soundfile as sf
 import asyncio
 import io
 import threading
-
+import fitz  # PyMuPDF
+import atexit
+import docx
 # ------------------ 页面设置 ------------------ #
 st.set_page_config(
     page_title="DeepSeek + Ollama 本地问答机器人",
@@ -212,6 +214,7 @@ window.addEventListener("DOMContentLoaded", function () {
 """, unsafe_allow_html=True)
 
 
+
 # ------------------ 聊天历史 ------------------ #
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": "你是一个乐于助人的AI助手，用中文简洁清晰地回答问题"}]
@@ -224,7 +227,7 @@ for msg in st.session_state.messages:
 
 # ------------------ Milvus 初始化 ------------------ #
 CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
+TOKEN = "358abb9a7807731d57cc"
 
 try:
     connections.connect(alias="default", uri=CLUSTER_ENDPOINT, token=TOKEN)
@@ -253,9 +256,76 @@ if collection_name not in existing_collections:
 else:
     collection = Collection(name=collection_name)
 
-collection.load()
 
+# ----------- 文本提取函数 ----------- #
+def extract_text_from_file(file, file_type):
+    if file_type == "pdf":
+        text = ""
+        with fitz.open(stream=file.read(), filetype="pdf") as doc:
+            for page in doc:
+                text += page.get_text()
+        return text
 
+    elif file_type == "docx":
+        doc = docx.Document(file)
+        return "\n".join([para.text for para in doc.paragraphs])
+
+    elif file_type == "txt":
+        return file.read().decode("utf-8")
+
+    else:
+        return ""
+
+# ----------- 分块函数 ----------- #
+def chunk_text(text, chunk_size=300, overlap=50):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return chunks
+
+# ----------- 自动删除上传向量 ----------- #
+def delete_uploaded_vectors():
+    if "uploaded_vector_ids" in st.session_state:
+        try:
+            ids = st.session_state.uploaded_vector_ids
+            id_expr = f"id in [{','.join(map(str, ids))}]"
+            collection.delete(expr=id_expr)
+            st.info(f"🧹 自动删除了 {len(ids)} 条向量。")
+        except Exception as e:
+            st.warning(f"❌ 删除向量失败: {e}")
+
+atexit.register(delete_uploaded_vectors)
+
+# ----------- 文件上传 UI ----------- #
+uploaded_file = st.file_uploader("📄 上传文件 (支持 PDF / Word / TXT)", type=["pdf", "docx", "txt"])
+if uploaded_file:
+    file_type = uploaded_file.name.split(".")[-1].lower()
+    st.success(f"📤 文件 {uploaded_file.name} 上传成功，类型：{file_type.upper()}")
+
+    with st.spinner("📄 正在提取文本..."):
+        text = extract_text_from_file(uploaded_file, file_type)
+
+    if text.strip() == "":
+        st.warning("⚠️ 文件中没有提取到有效文本")
+    else:
+        chunks = chunk_text(text)
+        st.info(f"📌 提取到 {len(chunks)} 个段落，正在生成向量并写入数据库...")
+
+        try:
+            vectors = [get_embedding(chunk) for chunk in chunks]
+            insert_result = collection.insert([
+                chunks,
+                vectors,
+                [1.0] * len(chunks)
+            ])
+            inserted_ids = insert_result.primary_keys
+            st.session_state.uploaded_vector_ids = inserted_ids
+            st.success(f"✅ 插入成功：{len(inserted_ids)} 条向量，退出后将自动删除。")
+        except Exception as e:
+            st.error(f"❌ 向量插入失败: {e}")
 # ------------------ 检索函数 ------------------ #
 def search_similar_docs(query_text, top_k=3):
     query_vector = get_embedding(query_text)
