@@ -6,57 +6,217 @@ import threading
 from sentence_transformers import SentenceTransformer
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from streamlit.components.v1 import html
-from parts.voice_input_component import voice_input_component
-from streamlit_js_eval import streamlit_js_eval
+from audio_recorder_streamlit import audio_recorder
+from faster_whisper import WhisperModel
+import io
 import numpy as np
+import re
+import time
+import streamlit.components.v1 as components
+import edge_tts
+import sounddevice as sd
+import soundfile as sf
+import asyncio
+import io
+import threading
+
+# ------------------ 页面设置 ------------------ #
+st.set_page_config(
+    page_title="DeepSeek + Ollama 本地问答机器人",
+    page_icon="🤖",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# ------------------ CSS样式 ------------------ #
+st.markdown("""
+<style>
+    /* 主容器样式 */
+    .stApp {
+        background-color: #f5f7fa;
+    }
+
+    /* 聊天消息样式 */
+    .stChatMessage {
+        border-radius: 15px;
+        padding: 12px 18px;
+        margin: 8px 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    /* 用户消息样式 */
+    [data-testid="stChatMessage-user"] {
+        background-color: #e3f2fd;
+        margin-left: 20%;
+    }
+
+    /* 助手消息样式 */
+    [data-testid="stChatMessage-assistant"] {
+        background-color: #ffffff;
+        margin-right: 20%;
+    }
+
+    /* 按钮样式 */
+    .stButton>button {
+        border-radius: 20px;
+        padding: 8px 16px;
+        background-color: #4a6fa5;
+        color: white;
+        border: none;
+        transition: all 0.3s;
+    }
+
+    .stButton>button:hover {
+        background-color: #3a5a80;
+        transform: scale(1.05);
+    }
+
+    /* 语音按钮特殊样式 */
+    #voice_button_side {
+        background-color: #ff6b6b;
+    }
+
+    #voice_button_side:hover {
+        background-color: #ff5252;
+    }
+
+    /* 输入框样式 */
+    .stTextInput>div>div>input {
+        border-radius: 20px;
+        padding: 10px 15px;
+    }
+
+    /* 状态提示样式 */
+    .status-box {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        padding: 10px 15px;
+        margin: 10px 0;
+        border-left: 4px solid #4a6fa5;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ------------------ 初始化 ------------------ #
+# ------------------ 添加 Live2D 看板娘 ------------------ #
 live2d_js = """
-<script src="https://fastly.jsdelivr.net/gh/stevenjoezhang/live2d-widget@latest/autoload.js"></script>
+<script src="https://fastly.jsdelivr.net/gh/mtcm-0314/live2d-widget@latest/dist/autoload.js"></script>
 """
 html(live2d_js, height=400)
+
+
 
 stop_speaking = threading.Event()
 speak_thread = None
 
-def create_tts_engine():
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 150)
-    engine.setProperty('volume', 1)
-    return engine
 
-def speak(text):
-    global speak_thread
-    stop_speaking.clear()
-    engine = create_tts_engine()
-    for word in text.split():
-        if stop_speaking.is_set():
-            break
-        engine.say(word)
-        engine.runAndWait()
-    engine.stop()
+# ------------------ 语音识别模型 ------------------ #
+@st.cache_resource
+def load_whisper_model():
+    return WhisperModel("small", device="cpu", compute_type="int8")
+
+
+whisper_model = load_whisper_model()
+
+
+# ------------------ 语音功能 ------------------ #
+stop_speaking = threading.Event()
+speak_thread = None
+
+# Edge-TTS 支持的中文语音选项
+voice_options = {
+    "女声（晓晓）": "zh-CN-XiaoxiaoNeural",
+    "男声（云希）": "zh-CN-YunxiNeural",
+    "童声（云夏）": "zh-CN-YunxiaNeural",
+    "情感 (小毅）": "zh-CN-XiaoyiNeural",
+    "正式（云杨）":"zh-CN-YunyangNeural"
+}
+
+voice_name = st.selectbox("选择语音角色", list(voice_options.keys()), index=0)
+voice = voice_options[voice_name]
 
 def stop_tts():
     global speak_thread
     stop_speaking.set()
-    engine = create_tts_engine()
-    engine.stop()
+    sd.stop()
     if speak_thread and speak_thread.is_alive():
         speak_thread.join()
     speak_thread = None
 
+def speak(text, voice=voice):
+    global speak_thread
+    stop_speaking.clear()
+
+    async def run_tts():
+        try:
+            communicate = edge_tts.Communicate(text, voice)
+            audio_stream = communicate.stream()
+            audio_bytes = b""
+            async for chunk in audio_stream:
+                if chunk["type"] == "audio":
+                    audio_bytes += chunk["data"]
+            audio_array, samplerate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+            if not stop_speaking.is_set():
+                sd.play(audio_array, samplerate)
+                sd.wait()
+        except Exception as e:
+            st.error(f"❌ 语音合成错误: {e}")
+
+    asyncio.run(run_tts())
+
+
 # ------------------ 嵌入模型 ------------------ #
-embedding_model = SentenceTransformer(r'C:\Users\mtcm\Desktop\东盟杯\code\local_embedding_model')
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer(r'C:\Users\mtcm\Desktop\东盟杯\code\local_embedding_model')
+
+
+embedding_model = load_embedding_model()
+
 
 def get_embedding(text):
     return embedding_model.encode([text])[0].tolist()
 
-# ------------------ Streamlit UI ------------------ #
-st.title("💬 DeepSeek + Ollama 本地问答机器人")
-st.write("支持本地 Ollama 模型、Milvus 检索、流式响应、语音播放")
 
+# ------------------ 应用标题 ------------------ #
+st.title("🤖 DeepSeek + Ollama 本地问答机器人")
+st.markdown("""
+<script>
+window.addEventListener("DOMContentLoaded", function () {
+    const waitInput = setInterval(() => {
+        const inputBox = parent.document.querySelector('textarea[data-testid="stChatInput"]');
+        const waifuTips = parent.document.getElementById('waifu-tips');
+
+        if (inputBox && waifuTips) {
+            clearInterval(waitInput);
+
+            inputBox.addEventListener('input', () => {
+                const text = inputBox.value.trim();
+                if (text !== "") {
+                    const thinkingPhrases = ["正在思考中...", "让我想想...", "稍等片刻～", "这个问题有点难呢...", "让我翻翻笔记..."];
+                    const msg = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)];
+
+                    waifuTips.innerHTML = msg;
+                    waifuTips.classList.add("waifu-tips-active");
+                }
+            });
+
+            inputBox.addEventListener('blur', () => {
+                waifuTips.innerHTML = '';
+                waifuTips.classList.remove("waifu-tips-active");
+            });
+        }
+    }, 500);
+});
+</script>
+""", unsafe_allow_html=True)
+
+
+# ------------------ 聊天历史 ------------------ #
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": "你是一个乐于助人的AI助手，用中文简洁清晰地回答问题"}]
 
+# 显示聊天历史
 for msg in st.session_state.messages:
     if msg["role"] in ["user", "assistant"]:
         with st.chat_message(msg["role"]):
@@ -64,7 +224,7 @@ for msg in st.session_state.messages:
 
 # ------------------ Milvus 初始化 ------------------ #
 CLUSTER_ENDPOINT = "https://in03-4bb3b5dc9f774d4.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn"
-TOKEN = "358abb9a79b57207731d57cc"
+TOKEN = "358abb9a79b5795fc5a66d21be8a100fde909ce78c21e9918e7ee88a6abfc587ad47fdcd0e8184798b91c066a09c2207731d57cc"
 
 try:
     connections.connect(alias="default", uri=CLUSTER_ENDPOINT, token=TOKEN)
@@ -79,12 +239,10 @@ if collection_name not in existing_collections:
     id_field = FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True)
     text_field = FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=500)
     vector_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=384)
-    # 修改 FieldSchema 定义（添加 FLOAT 类型的 weight 字段）
-    weight_field = FieldSchema(name="weight", dtype=DataType.FLOAT)  # 权重字段
+    weight_field = FieldSchema(name="weight", dtype=DataType.FLOAT)
     schema = CollectionSchema(
-        fields=[id_field, text_field, vector_field, weight_field]  # 加入 weight
+        fields=[id_field, text_field, vector_field, weight_field]
     )
-    # schema = CollectionSchema(fields=[id_field, text_field, vector_field])
     collection = Collection(name=collection_name, schema=schema)
     index_params = {
         "index_type": "IVF_FLAT",
@@ -97,19 +255,8 @@ else:
 
 collection.load()
 
+
 # ------------------ 检索函数 ------------------ #
-# def search_similar_docs(query_text, top_k=3):
-#     query_vector = get_embedding(query_text)
-#     search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
-#     results = collection.search(
-#         data=[query_vector],
-#         anns_field="embedding",
-#         param=search_params,
-#         limit=top_k,
-#         output_fields=["text"]
-#     )
-#     hits = results[0]
-#     return [hit.entity.get("text") for hit in hits]
 def search_similar_docs(query_text, top_k=3):
     query_vector = get_embedding(query_text)
     search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
@@ -118,47 +265,74 @@ def search_similar_docs(query_text, top_k=3):
         data=[query_vector],
         anns_field="embedding",
         param=search_params,
-        limit=top_k * 2,  # 多取一些结果用于后续加权
+        limit=top_k * 2,
         output_fields=["text", "weight"]
     )
 
     hits = results[0]
-    # 计算加权得分
     weighted_results = []
     for hit in hits:
         score = hit.score
-        # st.write("score:", score)
         text = hit.entity.get("text")
-        # st.write("text:", text)
-        weight = hit.entity.get("weight")  # 默认权重1.0
-        # st.write("weight:", weight)
-        # weighted_score = score * weight
+        weight = hit.entity.get("weight")
         weighted_score = score * (1 + np.log(weight + 1))
         weighted_results.append((text, weighted_score))
 
-    # 按加权得分排序
     weighted_results.sort(key=lambda x: x[1], reverse=True)
-
-    # 返回前top_k个结果
     return [result[0] for result in weighted_results[:top_k]]
+
+
 # ------------------ 本地 OLLAMA 设置 ------------------ #
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "deepseek-r1"
 
-# ------------------ 用户输入 & 主逻辑 ------------------ #
-# 在页面上加载语音识别组件
-voice_input_component()
+# ------------------ 输入区域 ------------------ #
+# 创建两列布局：输入框和语音按钮
+input_col, voice_col = st.columns([5, 1])
 
-# 尝试获取识别结果
-transcript = streamlit_js_eval(js_expressions="window._lastVoiceTranscript", key="voice_input")
+with input_col:
+    # 初始化聊天输入值
+    if "chat_input_value" not in st.session_state:
+        st.session_state.chat_input_value = ""
+    components.html(
+        """
+        <div id="waifu-streamlit-input-box"></div>
+        """,
+        height=0,
+    )
+    # 创建聊天输入框
+    user_input = st.chat_input(
+        "请输入你的问题...",
+        key="chat_input"
+    )
 
-if transcript and transcript.strip():
-    st.session_state.voice_input = transcript.strip()
-    st.experimental_rerun()
+with voice_col:
+    # 语音按钮
+    if st.button("🎤", key="voice_button_side", help="点击开始语音输入"):
+        st.session_state.recording = True
+        st.session_state.voice_input_result = ""
+        st.rerun()
 
-# 检查是否有语音输入内容
-user_input = st.chat_input("请输入你的问题...") or st.session_state.pop("voice_input", "")
+# 语音录制和处理
+if st.session_state.get("recording", False):
+    with st.container():
+        st.markdown('<div class="status-box">🎤 正在录音... (说话后自动停止)</div>', unsafe_allow_html=True)
+        audio_bytes = audio_recorder(text="", pause_threshold=2.0, key="audio_recorder")
 
+        if audio_bytes:
+            st.session_state.recording = False
+            with st.spinner("🔍 正在识别语音..."):
+                recognized_text = transcribe_audio(audio_bytes)
+                if recognized_text:
+                    st.session_state.chat_input_value = recognized_text
+                    st.rerun()
+
+# 如果会话状态中有预设值，使用它作为用户输入
+if "chat_input_value" in st.session_state and st.session_state.chat_input_value:
+    user_input = st.session_state.chat_input_value
+    st.session_state.chat_input_value = ""
+
+# ------------------ 处理用户输入 ------------------ #
 if user_input:
     stop_tts()
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -166,14 +340,10 @@ if user_input:
         st.markdown(user_input)
 
     try:
-        user_embedding = get_embedding(user_input)
-    except Exception as e:
-        st.error(f"❌ 获取嵌入失败: {e}")
-        st.stop()
-
-    try:
         related_docs = search_similar_docs(user_input, top_k=10)
+        st.write("related_docs",related_docs)
         knowledge_context = "\n".join(related_docs)
+
         system_prompt = f"你是一个聪明的 AI 助手，请参考以下知识回答用户的问题：\n{knowledge_context}"
     except Exception as e:
         st.error(f"❌ Milvus 检索失败: {e}")
@@ -210,13 +380,21 @@ if user_input:
                     message_placeholder.markdown(full_response + "▌")
             message_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
-
-            speak_thread = threading.Thread(target=speak, args=(full_response,))
+            clean_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL)
+            speak_thread = threading.Thread(target=speak, args=(clean_response,))
             speak_thread.start()
 
     except Exception as e:
         st.error(f"❌ Ollama 本地模型调用失败: {e}")
 
-# ------------------ 停止朗读按钮 ------------------ #
-if st.button("🛑 停止朗读"):
-    stop_tts()
+# ------------------ 底部控制按钮 ------------------ #
+button_col1, button_col2 = st.columns([1, 1])
+
+with button_col1:
+    if st.button("🛑 停止朗读", help="停止当前语音朗读"):
+        stop_tts()
+
+with button_col2:
+    if st.button("🧹 清除对话", help="清除所有聊天历史"):
+        st.session_state.messages = [{"role": "system", "content": "你是一个乐于助人的AI助手，用中文简洁清晰地回答问题"}]
+        st.rerun()
